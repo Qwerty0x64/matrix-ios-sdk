@@ -117,6 +117,8 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
                                                                 kMXEventTypeStringCallNegotiate,
                                                                 kMXEventTypeStringCallReplaces,
                                                                 kMXEventTypeStringCallRejectReplacement,
+                                                                kMXEventTypeStringCallAssertedIdentity,
+                                                                kMXEventTypeStringCallAssertedIdentityUnstable,
                                                                 kMXEventTypeStringRoomMember
                                                                 ]
                                                       onEvent:^(MXEvent *event, MXTimelineDirection direction, id customObject) {
@@ -348,7 +350,7 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
     }
     else
     {
-        NSLog(@"[MXCallManager] placeCallInRoom: ERROR: Cannot place call in %@. Members count: %tu", roomId, room.summary.membersCount.joined);
+        MXLogDebug(@"[MXCallManager] placeCallInRoom: ERROR: Cannot place call in %@. Members count: %tu", roomId, room.summary.membersCount.joined);
 
         if (failure)
         {
@@ -394,6 +396,10 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
         case MXEventTypeCallRejectReplacement:
             [self handleCallRejectReplacement:event];
             break;
+        case MXEventTypeCallAssertedIdentity:
+        case MXEventTypeCallAssertedIdentityUnstable:
+            [self handleCallAssertedIdentity:event];
+            break;
         case MXEventTypeRoomMember:
             [self handleRoomMember:event];
             break;
@@ -409,7 +415,7 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
     [_mxSession.matrixRestClient turnServer:^(MXTurnServerResponse *turnServerResponse) {
         MXStrongifyAndReturnIfNil(self);
 
-        NSLog(@"[MXCallManager] refreshTURNServer: TTL:%tu URIs: %@", turnServerResponse.ttl, turnServerResponse.uris);
+        MXLogDebug(@"[MXCallManager] refreshTURNServer: TTL:%tu URIs: %@", turnServerResponse.ttl, turnServerResponse.uris);
 
         if (turnServerResponse.uris)
         {
@@ -426,15 +432,15 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
         }
         else
         {
-            NSLog(@"No TURN server: using fallback STUN server: %@", self->_fallbackSTUNServer);
+            MXLogDebug(@"No TURN server: using fallback STUN server: %@", self->_fallbackSTUNServer);
             self.turnServers = nil;
         }
 
     } failure:^(NSError *error) {
         MXStrongifyAndReturnIfNil(self);
 
-        NSLog(@"[MXCallManager] refreshTURNServer: Failed to get TURN URIs.\n");
-        NSLog(@"Retry in 60s");
+        MXLogDebug(@"[MXCallManager] refreshTURNServer: Failed to get TURN URIs.\n");
+        MXLogDebug(@"Retry in 60s");
         self->refreshTURNServerTimer = [NSTimer timerWithTimeInterval:60 target:self selector:@selector(refreshTURNServer) userInfo:nil repeats:NO];
         [[NSRunLoop mainRunLoop] addTimer:self->refreshTURNServerTimer forMode:NSDefaultRunLoopMode];
     }];
@@ -632,6 +638,55 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
     }
 }
 
+- (void)handleCallAssertedIdentity:(MXEvent *)event
+{
+    //  check handling allowed
+    if (![MXSDKOptions sharedInstance].handleCallAssertedIdentityEvents)
+    {
+        return;
+    }
+    
+    MXCallAssertedIdentityEventContent *content = [MXCallAssertedIdentityEventContent modelFromJSON:event.content];
+    
+    // Forward the event to the MXCall object
+    MXCall *call = [self callWithCallId:content.callId];
+    if (call)
+    {
+        if (content.assertedIdentity.userId)
+        {
+            //  do a native lookup first
+            
+            MXWeakify(self);
+            
+            [self getNativeUserFrom:content.assertedIdentity.userId success:^(MXThirdPartyUserInstance * _Nonnull user) {
+                MXStrongifyAndReturnIfNil(self);
+                
+                MXAssertedIdentityModel *assertedIdentity = content.assertedIdentity;
+                
+                //  fetch the native user
+                MXUser *mxUser = [self.mxSession userWithUserId:user.userId];
+                
+                if (mxUser)
+                {
+                    assertedIdentity = [[MXAssertedIdentityModel alloc] initWithUser:mxUser];
+                }
+                else
+                {
+                    assertedIdentity.userId = user.userId;
+                }
+                
+                //  use the updated asserted identity
+                call.assertedIdentity = assertedIdentity;
+            } failure:nil];
+        }
+        else
+        {
+            //  no need to a native lookup, directly pass the identity
+            call.assertedIdentity = content.assertedIdentity;
+        }
+    }
+}
+
 - (void)handleRoomMember:(MXEvent *)event
 {
     MXRoomMemberEventContent *content = [MXRoomMemberEventContent modelFromJSON:event.content];
@@ -655,14 +710,22 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
                 {
                     //  auto-accept this invite from the virtual room, if a direct room with the native user found
                     [room join:^{
-                        NSLog(@"[MXCallManager] handleRoomMember: auto-joined on virtual room successfully.");
+                        MXLogDebug(@"[MXCallManager] handleRoomMember: auto-joined on virtual room successfully.");
                         
                         //  set account data on the room, if required
                         [self.mxSession.roomAccountDataUpdateDelegate updateAccountDataIfRequiredForRoom:room
                                                                                         withNativeRoomId:nativeRoom.roomId
                                                                                               completion:nil];
                     } failure:^(NSError *error) {
-                        NSLog(@"[MXCallManager] handleRoomMember: auto-join on virtual room failed with error: %@", error);
+                        MXLogDebug(@"[MXCallManager] handleRoomMember: auto-join on virtual room failed with error: %@", error);
+                        
+                        if (error.code == kMXRoomAlreadyJoinedErrorCode)
+                        {
+                            //  set account data on the room, if required
+                            [self.mxSession.roomAccountDataUpdateDelegate updateAccountDataIfRequiredForRoom:room
+                                                                                            withNativeRoomId:nativeRoom.roomId
+                                                                                                  completion:nil];
+                        }
                     }];
                 }
             } failure:nil];
@@ -750,7 +813,7 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
                   to:(MXUserModel *)target
       withTransferee:(MXUserModel *)transferee
         consultFirst:(BOOL)consultFirst
-             success:(void (^)(NSString * _Nonnull newCallId))success
+             success:(void (^)(NSString * _Nullable newCallId))success
              failure:(void (^)(NSError * _Nullable error))failure
 {
     if (callWithTransferee.isConferenceCall)
@@ -763,149 +826,235 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
         return;
     }
     
-    MXWeakify(self);
+    dispatch_group_t virtualUserCheckGroup = dispatch_group_create();
     
-    //  find the call with target
+    __block NSString *targetUserId = target.userId;
     
-    [self callWithUser:target.userId completion:^(MXCall * _Nullable call) {
+    if (self.virtualRoomsSupported)
+    {
+        dispatch_group_enter(virtualUserCheckGroup);
+        [self getVirtualUserFrom:targetUserId success:^(MXThirdPartyUserInstance * _Nonnull user) {
+            targetUserId = user.userId;
+            dispatch_group_leave(virtualUserCheckGroup);
+        } failure:^(NSError * _Nullable error) {
+            dispatch_group_leave(virtualUserCheckGroup);
+        }];
+    }
+    
+    dispatch_group_notify(virtualUserCheckGroup, dispatch_get_main_queue(), ^{
+        target.userId = targetUserId;
         
-        MXStrongifyAndReturnIfNil(self);
+        MXWeakify(self);
         
-        //  define continue block
-        void(^continueBlock)(MXCall *) = ^(MXCall *callWithTarget) {
-            
-            //  find a suitable room (which only consists three users: self, the transferee and the target)
+        //  find the active call with target
+        
+        [self activeCallWithUser:targetUserId completion:^(MXCall * _Nullable call) {
             
             MXStrongifyAndReturnIfNil(self);
             
-            [self callTransferRoomWithUsers:@[target.userId, transferee.userId] completion:^(MXRoom * _Nullable transferRoom, BOOL isNewRoom) {
+            //  define continue block
+            void(^continueBlock)(MXCall *) = ^(MXCall *callWithTarget) {
                 
-                if (!transferRoom)
+                //  find a suitable room (which only consists three users: self, the transferee and the target)
+                
+                MXStrongifyAndReturnIfNil(self);
+                
+                if (MXSDKOptions.sharedInstance.callTransferType == MXCallTransferTypeBridged)
                 {
-                    //  A room cannot be found/created
-                    if (failure)
+                    if (consultFirst)
                     {
-                        failure(nil);
-                    }
-                    return;
-                }
-                
-                //  generate a new call id
-                NSString *newCallId = [[NSUUID UUID] UUIDString];
-                
-                //  first, send replaces event to the call with the transferee, send info about target
-                //  to make transferee start a new call
-                [callWithTransferee transferToRoom:transferRoom.roomId
-                                              user:target
-                                        createCall:newCallId
-                                         awaitCall:nil
-                                           success:^(NSString * _Nonnull eventId) {
-                    
-                    //  define block to be called after replaces events are sent
-                    void(^afterReplacesEventsBlock)(void) = ^{
-                        if (isNewRoom)
+                        //  consult with the target
+                        if (callWithTarget.isOnHold)
                         {
-                            //  if was a newly created room, send invites after replaces events
-                            [transferRoom inviteUser:target.userId success:nil failure:failure];
-                            [transferRoom inviteUser:transferee.userId success:nil failure:failure];
+                            [callWithTarget hold:NO];
                         }
-                        
-                        //  do not end the calls, wait for other parties to end it
-                        
-                        //  TODO: Observe the call with the newCallId
                         
                         if (success)
                         {
-                            success(newCallId);
+                            success(nil);
                         }
-                    };
-                    
-                    if (callWithTarget)
-                    {
-                        //  then, send replaces event to the call with the target, send info about transferee
-                        //  to make target await a call
-                        [callWithTarget transferToRoom:transferRoom.roomId
-                                                  user:transferee
-                                            createCall:nil
-                                             awaitCall:newCallId
-                                               success:^(NSString * _Nonnull eventId) {
-                            
-                            if (consultFirst)
-                            {
-                                //  hold the callWithTransferee
-                                [callWithTransferee hold:YES];
-                                
-                                //  consult with the target
-                                [callWithTarget hold:NO];
-                                
-                                //  TODO: Make a state change on callWithTransferee here, like `onHoldForConsulting` and provide target details, to complete the transfer after
-                            }
-                            else
-                            {
-                                //  no need to consult
-                                
-                                afterReplacesEventsBlock();
-                            }
-                            
-                        } failure:failure];
                     }
                     else
                     {
-                        //  being here means no need to consult, otherwise would fail before
+                        //  generate a new call id
+                        NSString *newCallId = [[NSUUID UUID] UUIDString];
                         
-                        afterReplacesEventsBlock();
-                    }
-                    
-                } failure:failure];
-            }];
-        };
-        
-        if (call)
-        {
-            continueBlock(call);
-        }
-        else
-        {
-            //  we're not in a call with target
-            
-            if (consultFirst)
-            {
-                MXWeakify(self);
-                
-                [self directCallableRoomWithUser:target.userId timeout:kMXCallDirectRoomJoinTimeout completion:^(MXRoom * _Nullable room, NSError * _Nullable error) {
-                    
-                    MXStrongifyAndReturnIfNil(self);
-                    
-                    if (room == nil)
-                    {
-                        //  could not find/create a direct room with target
-                        if (failure)
+                        dispatch_group_t dispatchGroupReplaces = dispatch_group_create();
+                        
+                        if (callWithTarget)
                         {
-                            failure(nil);
+                            //  send replaces event to target
+                            dispatch_group_enter(dispatchGroupReplaces);
+                            [callWithTarget transferToRoom:nil
+                                                      user:transferee
+                                                createCall:nil
+                                                 awaitCall:newCallId
+                                                   success:^(NSString * _Nonnull eventId) {
+                                dispatch_group_leave(dispatchGroupReplaces);
+                            } failure:failure];
                         }
-                        return;
-                    }
-                    
-                    //  hold the transferee call before starting the new call
-                    [callWithTransferee hold:YES];
-                    
-                    //  place a new call to the target
-                    [self placeCallInRoom:room.roomId withVideo:callWithTransferee.isVideoCall success:^(MXCall * _Nonnull call) {
                         
-                        continueBlock(call);
-                    } failure:^(NSError * _Nullable error) {
-                        NSLog(@"[MXCallManager] transferCall: couldn't call the target: %@", error);
+                        dispatch_group_enter(dispatchGroupReplaces);
+                        //  send replaces event to transferee
+                        [callWithTransferee transferToRoom:nil
+                                                      user:target
+                                                createCall:newCallId
+                                                 awaitCall:nil
+                                                   success:^(NSString * _Nonnull eventId) {
+                            dispatch_group_leave(dispatchGroupReplaces);
+                        } failure:failure];
+                        
+                        dispatch_group_notify(dispatchGroupReplaces, dispatch_get_main_queue(), ^{
+                            if (success)
+                            {
+                                success(newCallId);
+                            }
+                        });
+                    }
+                }
+                else if (MXSDKOptions.sharedInstance.callTransferType == MXCallTransferTypeLocal)
+                {
+                    [self callTransferRoomWithUsers:@[targetUserId, transferee.userId] completion:^(MXRoom * _Nullable transferRoom, BOOL isNewRoom) {
+                        
+                        if (!transferRoom)
+                        {
+                            //  A room cannot be found/created
+                            if (failure)
+                            {
+                                failure(nil);
+                            }
+                            return;
+                        }
+                        
+                        if (consultFirst)
+                        {
+                            //  consult with the target
+                            if (callWithTarget.isOnHold)
+                            {
+                                [callWithTarget hold:NO];
+                            }
+                            
+                            if (success)
+                            {
+                                success(nil);
+                            }
+                        }
+                        else
+                        {
+                            //  generate a new call id
+                            NSString *newCallId = [[NSUUID UUID] UUIDString];
+                            
+                            dispatch_group_t dispatchGroupReplaces = dispatch_group_create();
+                            
+                            if (callWithTarget)
+                            {
+                                [callWithTarget hangup];
+                                
+                                //  send replaces event to target
+                                dispatch_group_enter(dispatchGroupReplaces);
+                                [callWithTarget transferToRoom:transferRoom.roomId
+                                                          user:transferee
+                                                    createCall:nil
+                                                     awaitCall:newCallId
+                                                       success:^(NSString * _Nonnull eventId) {
+                                    dispatch_group_leave(dispatchGroupReplaces);
+                                } failure:failure];
+                            }
+                            
+                            dispatch_group_enter(dispatchGroupReplaces);
+                            if (callWithTransferee.isOnHold)
+                            {
+                                [callWithTransferee hold:NO];
+                            }
+                            //  send replaces event to transferee
+                            [callWithTransferee transferToRoom:transferRoom.roomId
+                                                          user:target
+                                                    createCall:newCallId
+                                                     awaitCall:nil
+                                                       success:^(NSString * _Nonnull eventId) {
+                                dispatch_group_leave(dispatchGroupReplaces);
+                            } failure:failure];
+                            
+                            dispatch_group_notify(dispatchGroupReplaces, dispatch_get_main_queue(), ^{
+                                if (isNewRoom)
+                                {
+                                    //  if was a newly created room, send invites after replaces events
+                                    [transferRoom inviteUser:target.userId success:nil failure:failure];
+                                    [transferRoom inviteUser:transferee.userId success:nil failure:failure];
+                                }
+                                
+                                if (success)
+                                {
+                                    success(newCallId);
+                                }
+                            });
+                        }
+                        
                     }];
-                    
-                }];
+                }
+            };
+            
+            if (call)
+            {
+                if (consultFirst)
+                {
+                    call.callWithTransferee = callWithTransferee;
+                    call.transferee = transferee;
+                    call.transferTarget = target;
+                    call.consulting = YES;
+                }
+                continueBlock(call);
             }
             else
             {
-                //  we don't need to consult, so we can continue without an active call with the target
-                continueBlock(nil);
+                //  we're not in a call with target
+                
+                if (consultFirst)
+                {
+                    MXWeakify(self);
+                    
+                    [self directCallableRoomWithUser:target.userId timeout:kMXCallDirectRoomJoinTimeout completion:^(MXRoom * _Nullable room, NSError * _Nullable error) {
+                        
+                        MXStrongifyAndReturnIfNil(self);
+                        
+                        if (room == nil)
+                        {
+                            //  could not find/create a direct room with target
+                            if (failure)
+                            {
+                                failure(nil);
+                            }
+                            return;
+                        }
+                        
+                        //  place a new audio call to the target to consult the transfer
+                        [self placeCallInRoom:room.roomId withVideo:NO success:^(MXCall * _Nonnull call) {
+                            
+                            //  mark the call with target & transferee as consulting
+                            call.callWithTransferee = callWithTransferee;
+                            call.transferee = transferee;
+                            call.transferTarget = target;
+                            call.consulting = YES;
+                            
+                            continueBlock(call);
+                        } failure:^(NSError * _Nullable error) {
+                            MXLogDebug(@"[MXCallManager] transferCall: couldn't call the target: %@", error);
+                            if (failure)
+                            {
+                                failure(error);
+                            }
+                        }];
+                        
+                    }];
+                }
+                else
+                {
+                    //  we don't need to consult, so we can continue without an active call with the target
+                    continueBlock(nil);
+                }
             }
-        }
-    }];
+        }];
+    });
 }
 
 /// Attempts to find a room with the given users only. If not found, tries to create. If fails, completion will be called with a nil room.
@@ -1057,11 +1206,11 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
     }
 }
 
-/// Tries to find the call to a given user. If fails, completion will be called with a nil call.
+/// Tries to find an active call to a given user. If fails, completion will be called with a nil call.
 /// @param userId The user id to check.
 /// @param completion Completion block.
-- (void)callWithUser:(NSString * _Nonnull)userId
-          completion:(void (^_Nonnull)(MXCall* _Nullable call))completion
+- (void)activeCallWithUser:(NSString * _Nonnull)userId
+                completion:(void (^_Nonnull)(MXCall* _Nullable call))completion
 {
     __block MXCall *resultCall = nil;
     
@@ -1070,6 +1219,10 @@ NSTimeInterval const kMXCallDirectRoomJoinTimeout = 30;
     for (MXCall *call in calls)
     {
         if (call.isConferenceCall)
+        {
+            continue;
+        }
+        if (call.state == MXCallStateEnded)
         {
             continue;
         }
@@ -1302,7 +1455,7 @@ NSString *const kMXCallManagerConferenceUserDomain  = @"matrix.org";
         self.virtualRoomsSupported = (sipNativeProtocol && sipVirtualProtocol);
         
     } failure:^(NSError *error) {
-        NSLog(@"Failed to check for third party protocols with error: %@", error);
+        MXLogDebug(@"Failed to check for third party protocols with error: %@", error);
         self.pstnProtocol = nil;
     }];
 }
@@ -1319,7 +1472,7 @@ NSString *const kMXCallManagerConferenceUserDomain  = @"matrix.org";
         
         MXThirdPartyUserInstance * user = [thirdpartyUsersResponse.users firstObject];
         
-        NSLog(@"Succeeded to look up the phone number: %@", user.userId);
+        MXLogDebug(@"Succeeded to look up the phone number: %@", user.userId);
         
         if (user)
         {
@@ -1336,7 +1489,7 @@ NSString *const kMXCallManagerConferenceUserDomain  = @"matrix.org";
             }
         }
     } failure:^(NSError *error) {
-        NSLog(@"Failed to look up the phone number with error: %@", error);
+        MXLogDebug(@"Failed to look up the phone number with error: %@", error);
         if (failure)
         {
             failure(error);
@@ -1366,7 +1519,7 @@ NSString *const kMXCallManagerConferenceUserDomain  = @"matrix.org";
             else
             {
                 //  no room found
-                NSLog(@"Failed to find a room for call with error: %@", error);
+                MXLogDebug(@"Failed to find a room for call with error: %@", error);
                 if (failure)
                 {
                     failure(error);
@@ -1402,7 +1555,7 @@ NSString *const kMXCallManagerConferenceUserDomain  = @"matrix.org";
         
         MXThirdPartyUserInstance * user = [thirdpartyUsersResponse.users firstObject];
         
-        NSLog(@"[MXCallManager] getVirtualUserFrom: Succeeded to look up the virtual user: %@", user.userId);
+        MXLogDebug(@"[MXCallManager] getVirtualUserFrom: Succeeded to look up the virtual user: %@", user.userId);
         
         if (user && user.userId.length > 0)
         {
@@ -1419,7 +1572,7 @@ NSString *const kMXCallManagerConferenceUserDomain  = @"matrix.org";
             }
         }
     } failure:^(NSError *error) {
-        NSLog(@"[MXCallManager] getVirtualUserFrom: Failed to look up the virtual user with error: %@", error);
+        MXLogDebug(@"[MXCallManager] getVirtualUserFrom: Failed to look up the virtual user with error: %@", error);
         if (failure)
         {
             failure(error);
@@ -1439,7 +1592,7 @@ NSString *const kMXCallManagerConferenceUserDomain  = @"matrix.org";
         
         MXThirdPartyUserInstance * user = [thirdpartyUsersResponse.users firstObject];
         
-        NSLog(@"[MXCallManager] getNativeUserFrom: Succeeded to look up the native user: %@", user.userId);
+        MXLogDebug(@"[MXCallManager] getNativeUserFrom: Succeeded to look up the native user: %@", user.userId);
         
         if (user && user.userId.length > 0)
         {
@@ -1456,7 +1609,7 @@ NSString *const kMXCallManagerConferenceUserDomain  = @"matrix.org";
             }
         }
     } failure:^(NSError *error) {
-        NSLog(@"[MXCallManager] getNativeUserFrom: Failed to look up the native user with error: %@", error);
+        MXLogDebug(@"[MXCallManager] getNativeUserFrom: Failed to look up the native user with error: %@", error);
         if (failure)
         {
             failure(error);

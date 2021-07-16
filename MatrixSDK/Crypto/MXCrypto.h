@@ -36,6 +36,7 @@
 #import "MXKeyVerificationManager.h"
 #import "MXCrossSigning.h"
 #import "MXUsersTrustLevelSummary.h"
+#import "MXExportedOlmDevice.h"
 
 @class MXSession;
 
@@ -137,6 +138,17 @@ extern NSString *const MXDeviceListDidUpdateUsersDevicesNotification;
 + (void)checkCryptoWithMatrixSession:(MXSession*)mxSession complete:(void (^)(MXCrypto *crypto))complete;
 
 /**
+ Stores the exportedOlmDevice related to the credentials into the store.
+
+ @param exportedOlmDevice OlmDevice data to be stored
+ @param credentials credentials related to the exportedOlmDevice
+ @param complete a block called in any case when the operation completes.
+ */
++ (void)rehydrateExportedOlmDevice:(MXExportedOlmDevice*)exportedOlmDevice
+                   withCredentials:(MXCredentials *)credentials
+                          complete:(void (^)(BOOL success))complete;
+
+/**
  Start the crypto module.
  
  Device keys will be uploaded, then one time keys if there are not enough on the homeserver.
@@ -173,25 +185,35 @@ extern NSString *const MXDeviceListDidUpdateUsersDevicesNotification;
  
  @param event the event to decrypt.
 
- @return YES if keys are present.
+ @param onComplete the block called when the operations completes. It returns the result
  */
-- (BOOL)hasKeysToDecryptEvent:(MXEvent*)event;
+- (void)hasKeysToDecryptEvent:(MXEvent*)event
+                   onComplete:(void (^)(BOOL))onComplete;
 
 /**
  Decrypt a received event.
- 
- In case of success, the event is updated with clear data.
- In case of failure, event.decryptionError contains the error.
 
+ @warning This method is deprecated, use -[MXCrypto decryptEvents:inTimeline:onComplete:] instead.
+ 
  @param event the raw event.
  @param timeline the id of the timeline where the event is decrypted. It is used
                  to prevent replay attack.
  
- @param error the result error if there is a problem decrypting the event.
-
- @return The decryption result. Nil if it failed.
+ @return The decryption result.
  */
-- (MXEventDecryptionResult *)decryptEvent:(MXEvent*)event inTimeline:(NSString*)timeline error:(NSError** )error;
+- (MXEventDecryptionResult *)decryptEvent:(MXEvent*)event inTimeline:(NSString*)timeline __attribute__((deprecated("use -[MXCrypto decryptEvents:inTimeline:onComplete:] instead")));
+
+/**
+ Decrypt events asynchronously.
+ 
+ @param events the events to decrypt.
+ @param timeline the id of the timeline where the events are decrypted. It is used
+        to prevent replay attack.
+ @param onComplete the block called when the operations completes. It returns the decryption result for every event.
+ */
+- (void)decryptEvents:(NSArray<MXEvent*> *)events
+           inTimeline:(NSString*)timeline
+           onComplete:(void (^)(NSArray<MXEventDecryptionResult *>*))onComplete;
 
 /**
  Ensure that the outbound session is ready to encrypt events.
@@ -232,6 +254,14 @@ extern NSString *const MXDeviceListDidUpdateUsersDevicesNotification;
  @param deviceOneTimeKeysCount the number of one-time keys the server has for our device.
  */
 - (void)handleDeviceOneTimeKeysCount:(NSDictionary<NSString *, NSNumber*>*)deviceOneTimeKeysCount;
+
+/**
+ Handle a room key event.
+ 
+ @param event the room key event.
+ @param onComplete the block called when the operation completes.
+ */
+- (void)handleRoomKeyEvent:(MXEvent*)event onComplete:(void (^)(void))onComplete;
 
 /**
  Handle the completion of a /sync.

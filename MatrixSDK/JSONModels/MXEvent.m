@@ -65,6 +65,8 @@ NSString *const kMXEventTypeStringCallReject            = @"m.call.reject";
 NSString *const kMXEventTypeStringCallNegotiate         = @"m.call.negotiate";
 NSString *const kMXEventTypeStringCallReplaces          = @"m.call.replaces";
 NSString *const kMXEventTypeStringCallRejectReplacement = @"m.call.reject_replacement";
+NSString *const kMXEventTypeStringCallAssertedIdentity  = @"m.call.asserted_identity";
+NSString *const kMXEventTypeStringCallAssertedIdentityUnstable  = @"org.matrix.call.asserted_identity";
 NSString *const kMXEventTypeStringSticker               = @"m.sticker";
 NSString *const kMXEventTypeStringRoomTombStone         = @"m.room.tombstone";
 NSString *const kMXEventTypeStringKeyVerificationRequest= @"m.key.verification.request";
@@ -79,31 +81,41 @@ NSString *const kMXEventTypeStringSecretRequest         = @"m.secret.request";
 NSString *const kMXEventTypeStringSecretSend            = @"m.secret.send";
 NSString *const kMXEventTypeStringSecretStorageDefaultKey   = @"m.secret_storage.default_key";
 NSString *const kMXEventTypeStringTaggedEvents          = @"m.tagged_events";
+//NSString *const kMXEventTypeStringSpaceChild            = @"m.space.child";
+// Use temporary event type until the MSC approval
+NSString *const kMXEventTypeStringSpaceChild            = @"org.matrix.msc1772.space.child";
 
-NSString *const kMXMessageTypeText          = @"m.text";
-NSString *const kMXMessageTypeEmote         = @"m.emote";
-NSString *const kMXMessageTypeNotice        = @"m.notice";
-NSString *const kMXMessageTypeImage         = @"m.image";
-NSString *const kMXMessageTypeAudio         = @"m.audio";
-NSString *const kMXMessageTypeVideo         = @"m.video";
-NSString *const kMXMessageTypeLocation      = @"m.location";
-NSString *const kMXMessageTypeFile          = @"m.file";
-NSString *const kMXMessageTypeServerNotice  = @"m.server_notice";
+NSString *const kMXMessageTypeText                   = @"m.text";
+NSString *const kMXMessageTypeEmote                  = @"m.emote";
+NSString *const kMXMessageTypeNotice                 = @"m.notice";
+NSString *const kMXMessageTypeImage                  = @"m.image";
+NSString *const kMXMessageTypeAudio                  = @"m.audio";
+NSString *const kMXMessageTypeVideo                  = @"m.video";
+NSString *const kMXMessageTypeLocation               = @"m.location";
+NSString *const kMXMessageTypeFile                   = @"m.file";
+NSString *const kMXMessageTypeServerNotice           = @"m.server_notice";
 NSString *const kMXMessageTypeKeyVerificationRequest = @"m.key.verification.request";
 
-NSString *const MXEventRelationTypeAnnotation = @"m.annotation";
-NSString *const MXEventRelationTypeReference = @"m.reference";
-NSString *const MXEventRelationTypeReplace = @"m.replace";
+NSString *const MXEventRelationTypeAnnotation        = @"m.annotation";
+NSString *const MXEventRelationTypeReference         = @"m.reference";
+NSString *const MXEventRelationTypeReplace           = @"m.replace";
 
-NSString *const kMXEventLocalEventIdPrefix = @"kMXEventLocalId_";
+NSString *const kMXEventLocalEventIdPrefix           = @"kMXEventLocalId_";
 
 uint64_t const kMXUndefinedTimestamp = (uint64_t)-1;
 
-NSString *const kMXEventDidChangeSentStateNotification = @"kMXEventDidChangeSentStateNotification";
+NSString *const kMXEventDidChangeSentStateNotification  = @"kMXEventDidChangeSentStateNotification";
 NSString *const kMXEventDidChangeIdentifierNotification = @"kMXEventDidChangeIdentifierNotification";
-NSString *const kMXEventDidDecryptNotification = @"kMXEventDidDecryptNotification";
+NSString *const kMXEventDidDecryptNotification          = @"kMXEventDidDecryptNotification";
 
-NSString *const kMXEventIdentifierKey = @"kMXEventIdentifierKey";
+NSString *const kMXEventIdentifierKey                   = @"kMXEventIdentifierKey";
+
+NSString *const kMXMessageContentKeyVoiceMessageMSC2516     = @"org.matrix.msc2516.voice";
+NSString *const kMXMessageContentKeyVoiceMessageMSC3245     = @"org.matrix.msc3245.voice";
+NSString *const kMXMessageContentKeyVoiceMessage            = @"m.voice";
+NSString *const kMXMessageContentKeyExtensibleAudio         = @"org.matrix.msc1767.audio";
+NSString *const kMXMessageContentKeyExtensibleAudioDuration = @"duration";
+NSString *const kMXMessageContentKeyExtensibleAudioWaveform = @"waveform";
 
 #pragma mark - MXEvent
 @interface MXEvent ()
@@ -424,6 +436,14 @@ NSString *const kMXEventIdentifierKey = @"kMXEventIdentifierKey";
     return self.eventType == MXEventTypeRoomMessage && self.content[@"m.relates_to"][@"m.in_reply_to"][@"event_id"] != nil;
 }
 
+- (BOOL)isVoiceMessage
+{
+    NSString *msgtype = self.content[@"msgtype"];
+    return [msgtype isEqualToString:kMXMessageTypeAudio] && (self.content[kMXMessageContentKeyVoiceMessage] ||
+                                                             self.content[kMXMessageContentKeyVoiceMessageMSC2516] ||
+                                                             self.content[kMXMessageContentKeyVoiceMessageMSC3245]);
+}
+
 - (BOOL)contentHasBeenEdited
 {
     return self.unsignedData.relations.replace != nil;
@@ -580,6 +600,8 @@ NSString *const kMXEventIdentifierKey = @"kMXEventIdentifierKey";
     MXEvent *event = self;
     NSDictionary *newContentDict;
     MXJSONModelSetDictionary(newContentDict, replaceEvent.content[@"m.new_content"])
+    
+    MXEventDecryptionResult *replaceEventDecryptionResult;
 
     NSMutableDictionary *editedEventDict;
     if (replaceEvent.isEncrypted)
@@ -589,6 +611,9 @@ NSString *const kMXEventIdentifierKey = @"kMXEventIdentifierKey";
         NSMutableDictionary *editedEventContentDict = [replaceEvent.wireContent mutableCopy];
         [editedEventContentDict removeObjectForKey:@"m.relates_to"];
         editedEventDict[@"content"] = editedEventContentDict;
+        
+        // Reuse its decryption data
+        replaceEventDecryptionResult = [replaceEvent decryptionResult];
     }
     else if (event.content[@"body"] && newContentDict && [newContentDict[@"msgtype"] isEqualToString:event.content[@"msgtype"]])
     {
@@ -628,6 +653,11 @@ NSString *const kMXEventIdentifierKey = @"kMXEventIdentifierKey";
         }
         
         editedEvent = [MXEvent modelFromJSON:editedEventDict];
+        
+        if (replaceEventDecryptionResult)
+        {
+            [editedEvent setClearData:replaceEventDecryptionResult];
+        }
     }
     
     return editedEvent;
@@ -670,6 +700,11 @@ NSString *const kMXEventIdentifierKey = @"kMXEventIdentifierKey";
     }
 
     newEvent = [MXEvent modelFromJSON:newEventDict];
+    
+    if (self.isEncrypted)
+    {
+        [newEvent setClearData:[self decryptionResult]];
+    }
     
     return newEvent;
 }
@@ -835,6 +870,13 @@ NSString *const kMXEventIdentifierKey = @"kMXEventIdentifierKey";
 - (void)setClearData:(MXEventDecryptionResult *)decryptionResult
 {
     _clearEvent = nil;
+    
+    if (decryptionResult.error)
+    {
+        _decryptionError = decryptionResult.error;
+        return;
+    }
+    
     if (decryptionResult.clearEvent)
     {
         NSDictionary *clearEventJSON, *clearEventJSONContent;
@@ -990,6 +1032,24 @@ NSString *const kMXEventIdentifierKey = @"kMXEventIdentifierKey";
     }
     
     return encryptedContentFiles;
+}
+
+// Extract the decryption result that allowed to decrypt the event.
+- (MXEventDecryptionResult*)decryptionResult
+{
+    MXEventDecryptionResult *decryptionResult = [MXEventDecryptionResult new];
+    
+    if (_clearEvent)
+    {
+        decryptionResult.clearEvent = _clearEvent.JSONDictionary;
+        decryptionResult.senderCurve25519Key = _clearEvent->senderCurve25519Key;
+        decryptionResult.claimedEd25519Key = _clearEvent->claimedEd25519Key;
+        decryptionResult.forwardingCurve25519KeyChain = _clearEvent->forwardingCurve25519KeyChain;
+    }
+    
+    decryptionResult.error = _decryptionError;
+    
+    return decryptionResult;
 }
 
 #pragma mark - private

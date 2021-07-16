@@ -215,7 +215,19 @@ NSString * const kMXCallKitAdapterAudioSessionDidActive = @"kMXCallKitAdapterAud
 
 - (void)reportCall:(MXCall *)call connectedAtDate:(nullable NSDate *)date
 {
-    [self.provider reportOutgoingCallWithUUID:call.callUUID connectedAtDate:date];
+    if (call.isIncoming)
+    {
+        CXAnswerCallAction *answerCallAction = [[CXAnswerCallAction alloc] initWithCallUUID:call.callUUID];
+        CXTransaction *transaction = [[CXTransaction alloc] initWithAction:answerCallAction];
+        
+        [self.callController requestTransaction:transaction completion:^(NSError * _Nullable error) {
+            
+        }];
+    }
+    else
+    {
+        [self.provider reportOutgoingCallWithUUID:call.callUUID connectedAtDate:date];
+    }
     [self reportCall:call onHold:NO];
 }
 
@@ -255,7 +267,7 @@ NSString * const kMXCallKitAdapterAudioSessionDidActive = @"kMXCallKitAdapterAud
     update.supportsHolding = supportsHolding;
     
     [self.provider reportCallWithUUID:callUUID updated:update];
-    NSLog(@"[MXCallKitAdapter] updateSupportsHoldingForCall, call(%@) updated to: %u", call.callId, supportsHolding);
+    MXLogDebug(@"[MXCallKitAdapter] updateSupportsHoldingForCall, call(%@) updated to: %u", call.callId, supportsHolding);
 }
 
 + (BOOL)callKitAvailable
@@ -274,7 +286,7 @@ NSString * const kMXCallKitAdapterAudioSessionDidActive = @"kMXCallKitAdapterAud
 
 - (void)providerDidReset:(CXProvider *)provider
 {
-    NSLog(@"Provider did reset");
+    MXLogDebug(@"Provider did reset");
 }
 
 - (void)provider:(CXProvider *)provider didActivateAudioSession:(AVAudioSession *)audioSession

@@ -31,6 +31,8 @@ NS_ASSUME_NONNULL_BEGIN
 @class MXEvent;
 @class MXRoom;
 @class MXUserModel;
+@class MXAssertedIdentityModel;
+@class MXiOSAudioOutputRouter;
 
 /**
  Call states.
@@ -184,6 +186,26 @@ extern NSString *const kMXCallSupportsTransferringStatusDidChange;
                success:(void (^)(NSString * _Nonnull eventId))success
                failure:(void (^)(NSError * _Nullable error))failure;
 
+/**
+ Flag to indicate that the call is a call to consult a transfer.
+ */
+@property (nonatomic, assign, getter=isConsulting) BOOL consulting;
+
+/**
+ Transferee of the transfer. Should be provided when `consulting` is YES.
+ */
+@property (nonatomic, strong) MXCall *callWithTransferee;
+
+/**
+ Transferee of the transfer. Should be provided when `consulting` is YES.
+ */
+@property (nonatomic, copy) MXUserModel *transferee;
+
+/**
+ Target of the transfer. Should be provided when `consulting` is YES.
+ */
+@property (nonatomic, copy) MXUserModel *transferTarget;
+
 #pragma mark - DTMF
 
 /**
@@ -270,7 +292,7 @@ extern NSString *const kMXCallSupportsTransferringStatusDidChange;
 /**
  The display name of the caller. Nil for outgoing calls. Direct user's display name if the room is direct, otherwise display name of the room.
  */
-@property (readonly, nullable) NSString *callerName;
+@property (nonatomic, nullable) NSString *callerName;
 
 /**
  The party id for this call. Will be generated on first access.
@@ -318,11 +340,12 @@ extern NSString *const kMXCallSupportsTransferringStatusDidChange;
  */
 @property (nonatomic) BOOL videoMuted;
 
+#if TARGET_OS_IPHONE
 /**
- NO by default, the inbound audio is then routed to the default audio outputs.
- If YES, the inbound audio is sent to the main speaker.
+ Audio output router.
  */
-@property (nonatomic) BOOL audioToSpeaker;
+@property (nonatomic, readonly) MXiOSAudioOutputRouter *audioOutputRouter;
+#endif
 
 /**
  The camera to use.
@@ -334,6 +357,11 @@ extern NSString *const kMXCallSupportsTransferringStatusDidChange;
  The call duration in milliseconds.
  */
 @property (nonatomic, readonly) NSUInteger duration;
+
+/**
+ The asserted identity for the call. May be nil.
+ */
+@property (nonatomic, copy, nullable) MXAssertedIdentityModel *assertedIdentity;
 
 /**
  The delegate.
@@ -372,6 +400,30 @@ extern NSString *const kMXCallSupportsTransferringStatusDidChange;
  @param call the instance that changes
  */
 - (void)callSupportsTransferringStatusDidChange:(MXCall *)call;
+
+/**
+ Tells the delegate that `isConsulting` property of the call has changed.
+ @param call the instance that changes
+ */
+- (void)callConsultingStatusDidChange:(MXCall *)call;
+
+/**
+ Tells the delegate that `assertedIdentity` property of the call has changed.
+ @param call the instance that changes
+ */
+- (void)callAssertedIdentityDidChange:(MXCall *)call;
+
+/**
+ Tells the delegate that `audioOutputRouter.routeType` property of the call has changed.
+ @param call the instance that changes
+ */
+- (void)callAudioOutputRouteTypeDidChange:(MXCall *)call;
+
+/**
+ Tells the delegate that `audioOutputRouter.availableOutputRouteTypes` property of the call has changed.
+ @param call the instance that changes
+ */
+- (void)callAvailableAudioOutputsDidChange:(MXCall *)call;
 
 /**
  Tells the delegate an error occured.

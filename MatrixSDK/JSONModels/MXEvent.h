@@ -74,6 +74,8 @@ typedef NS_ENUM(NSInteger, MXEventType)
     MXEventTypeCallNegotiate,
     MXEventTypeCallReplaces,
     MXEventTypeCallRejectReplacement,
+    MXEventTypeCallAssertedIdentity,
+    MXEventTypeCallAssertedIdentityUnstable,
     MXEventTypeSticker,
     MXEventTypeRoomTombStone,
     MXEventTypeKeyVerificationRequest,
@@ -88,6 +90,7 @@ typedef NS_ENUM(NSInteger, MXEventType)
     MXEventTypeSecretSend,
     MXEventTypeSecretStorageDefaultKey,
     MXEventTypeTaggedEvents,
+    MXEventTypeSpaceChild,
 
     // The event is a custom event. Refer to its `MXEventTypeString` version
     MXEventTypeCustom = 1000
@@ -138,9 +141,12 @@ FOUNDATION_EXPORT NSString *const kMXEventTypeStringCallReject;
 FOUNDATION_EXPORT NSString *const kMXEventTypeStringCallNegotiate;
 FOUNDATION_EXPORT NSString *const kMXEventTypeStringCallReplaces;
 FOUNDATION_EXPORT NSString *const kMXEventTypeStringCallRejectReplacement;
+FOUNDATION_EXPORT NSString *const kMXEventTypeStringCallAssertedIdentity;
+FOUNDATION_EXPORT NSString *const kMXEventTypeStringCallAssertedIdentityUnstable;
 FOUNDATION_EXPORT NSString *const kMXEventTypeStringSticker;
 FOUNDATION_EXPORT NSString *const kMXEventTypeStringRoomTombStone;
 FOUNDATION_EXPORT NSString *const kMXEventTypeStringTaggedEvents;
+FOUNDATION_EXPORT NSString *const kMXEventTypeStringSpaceChild;
 
 // Interactive key verification
 FOUNDATION_EXPORT NSString *const kMXEventTypeStringKeyVerificationRequest;
@@ -186,6 +192,14 @@ FOUNDATION_EXPORT NSString *const MXEventRelationTypeReplace;       // Edition
  Prefix used for id of temporary local event.
  */
 FOUNDATION_EXPORT NSString *const kMXEventLocalEventIdPrefix;
+
+
+FOUNDATION_EXPORT NSString *const kMXMessageContentKeyVoiceMessage;
+FOUNDATION_EXPORT NSString *const kMXMessageContentKeyVoiceMessageMSC2516;
+FOUNDATION_EXPORT NSString *const kMXMessageContentKeyVoiceMessageMSC3245;
+FOUNDATION_EXPORT NSString *const kMXMessageContentKeyExtensibleAudio;
+FOUNDATION_EXPORT NSString *const kMXMessageContentKeyExtensibleAudioDuration;
+FOUNDATION_EXPORT NSString *const kMXMessageContentKeyExtensibleAudioWaveform;
 
 /**
  The internal event state used to handle the different steps of the event sending.
@@ -441,6 +455,11 @@ extern NSString *const kMXEventIdentifierKey;
 - (BOOL)isReplyEvent;
 
 /**
+ Return YES if the event contains a voice message
+ */
+- (BOOL)isVoiceMessage;
+
+/**
  Return YES if the event content has been edited.
  */
 - (BOOL)contentHasBeenEdited;
@@ -478,7 +497,7 @@ extern NSString *const kMXEventIdentifierKey;
 /**
  Returns the event with a new reference relation as it should come from the sync.
 
- @param event The reference event.
+ @param referenceEvent The reference event.
  @return Return an updated event with the new relation.
  */
 - (MXEvent*)eventWithNewReferenceRelation:(MXEvent*)referenceEvent;
